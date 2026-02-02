@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { fetchHtml, extractMainContent, makeLinksAbsolute, extractNavLinks } from './services/proxyService';
 import { generateSummary } from './services/geminiService';
 import { ScrapedPage, AppStatus } from './types';
-import { BookOpen, FileText, Download, RefreshCw, Search, CheckSquare, Square, Cpu, Printer, ChevronRight, Menu, Layers, StopCircle, Zap } from 'lucide-react';
+import { BookOpen, FileText, Download, RefreshCw, Search, CheckSquare, Square, Cpu, Printer, ChevronRight, Menu, Layers, StopCircle, Zap, Activity, FileOutput, Globe } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
 const App: React.FC = () => {
@@ -14,11 +14,14 @@ const App: React.FC = () => {
   const [selectedLinks, setSelectedLinks] = useState<Set<string>>(new Set());
   const [pages, setPages] = useState<ScrapedPage[]>([]);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [currentProcessingUrl, setCurrentProcessingUrl] = useState<string>('');
   
+  // Progress State for 3 Phases
+  const [scanProgress, setScanProgress] = useState({ current: 0, total: 50, currentUrl: '' });
+  const [readProgress, setReadProgress] = useState({ current: 0, total: 0, activeUrls: [] as string[] });
+  const [writeProgress, setWriteProgress] = useState({ current: 0, total: 0, lastWritten: '' });
+
   // Crawler State
   const [deepScan, setDeepScan] = useState<boolean>(false);
-  const [scannedCount, setScannedCount] = useState<number>(0);
   const stopScanRef = useRef<boolean>(false);
   
   // Gemini/AI State
@@ -31,7 +34,12 @@ const App: React.FC = () => {
     setDiscoveredLinks([]);
     setSelectedLinks(new Set());
     setPages([]);
-    setScannedCount(0);
+    
+    // Reset Progress Bars
+    setScanProgress({ current: 0, total: deepScan ? 50 : 1, currentUrl: 'Starting...' });
+    setReadProgress({ current: 0, total: 0, activeUrls: [] });
+    setWriteProgress({ current: 0, total: 0, lastWritten: '' });
+
     stopScanRef.current = false;
 
     // Queue for BFS (Breadth-First Search)
@@ -40,8 +48,6 @@ const App: React.FC = () => {
     const foundLinksMap = new Map<string, string>(); // href -> text
 
     try {
-      // Loop until queue is empty or stop requested or max limit reached
-      // Safety limit: 100 pages to prevent infinite loops in demo
       const MAX_PAGES_TO_SCAN = deepScan ? 50 : 1; 
 
       while (queue.length > 0 && visited.size < MAX_PAGES_TO_SCAN) {
@@ -50,12 +56,15 @@ const App: React.FC = () => {
         const currentUrl = queue.shift()!;
         if (visited.has(currentUrl)) continue;
 
-        setCurrentProcessingUrl(currentUrl);
+        // Update Scan Progress
+        setScanProgress(prev => ({ ...prev, currentUrl: currentUrl }));
         
         try {
             const html = await fetchHtml(currentUrl);
             visited.add(currentUrl);
-            setScannedCount(visited.size);
+            
+            // Update Scan Count
+            setScanProgress(prev => ({ ...prev, current: visited.size }));
 
             // Extract links from this page
             const links = extractNavLinks(html, currentUrl);
@@ -76,27 +85,22 @@ const App: React.FC = () => {
 
         } catch (error) {
             console.warn(`Failed to scan ${currentUrl}`, error);
-            // Continue to next url even if one fails
         }
 
-        // Increased delay to 500ms to be more polite and avoid 429 errors
+        // Delay for politeness
         await new Promise(r => setTimeout(r, 500));
       }
 
-      // Convert map to array for display
       const allFoundLinks = Array.from(foundLinksMap.entries()).map(([href, text]) => ({ href, text }));
-      
-      // Ensure the entered URL is in the list
       if (!foundLinksMap.has(baseUrl)) {
          allFoundLinks.unshift({ href: baseUrl, text: 'Home / Entry' });
       }
 
       setDiscoveredLinks(allFoundLinks);
-      
-      // Auto-select discovered links (up to reasonable limit for fetching)
       const initialSelection = new Set(allFoundLinks.slice(0, 50).map(l => l.href));
       setSelectedLinks(initialSelection);
       setStatus(AppStatus.IDLE);
+      setScanProgress(prev => ({ ...prev, currentUrl: 'Done' }));
 
     } catch (error) {
       alert(`Error scanning: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -127,76 +131,81 @@ const App: React.FC = () => {
     }
   };
 
-  // 3. Fetch Content (Updated with Multi-Agent / Concurrent Workers)
+  // 3. Fetch Content (Updated with 3-Phase Progress)
   const handleFetchContent = async () => {
     setStatus(AppStatus.FETCHING_CONTENT);
     stopScanRef.current = false;
     const linksToFetch = discoveredLinks.filter(l => selectedLinks.has(l.href));
     
-    // Initialize empty pages with pending status to preserve order if needed, 
-    // or we can just push results. Let's just push results for simplicity.
+    // Init Progress
+    const total = linksToFetch.length;
+    setReadProgress({ current: 0, total, activeUrls: [] });
+    setWriteProgress({ current: 0, total, lastWritten: 'Waiting...' });
+    
     const results: ScrapedPage[] = [];
     const jobQueue = [...linksToFetch];
-    
-    // Config: Number of concurrent agents
     const CONCURRENCY_LIMIT = 3; 
-    let activeWorkers = 0;
-    let completedCount = 0;
 
     // Worker Function
     const worker = async (workerId: number) => {
         while (jobQueue.length > 0 && !stopScanRef.current) {
-            const link = jobQueue.shift(); // Dequeue
+            const link = jobQueue.shift(); 
             if (!link) break;
 
-            setCurrentProcessingUrl(`[Agent ${workerId}] ${link.href}`);
+            // Phase 2: Reading Update (Start)
+            setReadProgress(prev => ({
+                ...prev,
+                current: prev.current + 1,
+                activeUrls: [...prev.activeUrls, link.href]
+            }));
             
             try {
-                // Fetch
+                // Network Request
                 const rawHtml = await fetchHtml(link.href);
                 const mainContent = extractMainContent(rawHtml);
                 const cleanContent = makeLinksAbsolute(mainContent, link.href);
 
-                // Store Result (Thread-safe-ish in JS event loop)
-                results.push({
+                // Phase 2: Reading Done (Remove from active list)
+                setReadProgress(prev => ({
+                    ...prev,
+                    activeUrls: prev.activeUrls.filter(u => u !== link.href)
+                }));
+
+                const pageData: ScrapedPage = {
                     url: link.href,
                     title: link.text,
                     content: cleanContent,
                     status: 'success',
                     links: []
-                });
+                };
+                results.push(pageData);
+
+                // Phase 3: Writing Update (Completed)
+                setWriteProgress(prev => ({
+                    ...prev,
+                    current: prev.current + 1,
+                    lastWritten: link.text
+                }));
+
             } catch (error) {
                 console.error(`Agent ${workerId} failed: ${link.href}`, error);
-                results.push({
-                    url: link.href,
-                    title: link.text,
-                    content: '<p class="text-red-500">Failed to load content.</p>',
-                    status: 'error',
-                    links: []
-                });
+                // Even if failed, we count as processed
+                setWriteProgress(prev => ({ ...prev, current: prev.current + 1, lastWritten: `Error: ${link.text}` }));
+                setReadProgress(prev => ({ ...prev, activeUrls: prev.activeUrls.filter(u => u !== link.href) }));
             }
 
-            completedCount++;
-            // Update UI occasionally? React state updates might be batched
-            // We'll update at the end or use a progress bar if we had one.
-            
-            // Random delay to prevent exact-time hammering (300ms - 800ms)
             const delay = 300 + Math.random() * 500;
             await new Promise(r => setTimeout(r, delay));
         }
     };
 
-    // Start Workers
     const workers = [];
     for (let i = 1; i <= CONCURRENCY_LIMIT; i++) {
         workers.push(worker(i));
     }
 
-    // Wait for all workers to finish
     await Promise.all(workers);
 
-    // Sort results to match original discovery order (optional, but good for TOC)
-    // We create a map for O(1) lookup
     const resultMap = new Map(results.map(r => [r.url, r]));
     const sortedPages = linksToFetch
         .map(link => resultMap.get(link.href))
@@ -204,35 +213,36 @@ const App: React.FC = () => {
 
     setPages(sortedPages);
     setStatus(AppStatus.READY_TO_PRINT);
-    setIsSidebarOpen(false); // Close sidebar to show content
+    setIsSidebarOpen(false); 
   };
 
-  // 4. AI Summarization for a specific page
   const handleSummarize = async (pageIndex: number) => {
     setIsSummarizing(true);
     const page = pages[pageIndex];
-    // Strip HTML tags for the AI prompt to save tokens
     const tempDiv = document.createElement('div');
     tempDiv.innerHTML = page.content;
     const textContent = tempDiv.textContent || "";
-    
     const summary = await generateSummary(textContent);
-    
     const updatedPages = [...pages];
     updatedPages[pageIndex] = { ...page, summary };
     setPages(updatedPages);
     setIsSummarizing(false);
   };
 
-  // 5. Print Function
   const handlePrint = () => {
     window.print();
   };
 
+  // Helper to calculate percentage safely
+  const getPercent = (current: number, total: number) => {
+      if (total === 0) return 0;
+      return Math.min(100, Math.round((current / total) * 100));
+  }
+
   return (
     <div className="flex flex-col h-full bg-slate-50">
       
-      {/* Top Bar (No Print) */}
+      {/* Top Bar */}
       <header className="no-print bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between shadow-sm z-10 sticky top-0">
         <div className="flex items-center gap-3">
           <div className="bg-blue-600 p-2 rounded-lg">
@@ -273,7 +283,6 @@ const App: React.FC = () => {
                 )}
             </div>
             
-            {/* Deep Scan Toggle */}
             <div className="flex items-center gap-2 px-1">
                 <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer select-none">
                     <input 
@@ -307,7 +316,7 @@ const App: React.FC = () => {
       {/* Main Layout */}
       <div className="flex flex-1 overflow-hidden relative">
         
-        {/* Sidebar: Link Selection (No Print) */}
+        {/* Sidebar */}
         <aside className={`no-print bg-white border-r border-slate-200 flex flex-col transition-all duration-300 ${isSidebarOpen ? 'w-80' : 'w-0 overflow-hidden'}`}>
           <div className="p-4 border-b border-slate-100 flex flex-col gap-2 bg-slate-50">
              <div className="flex justify-between items-center">
@@ -321,11 +330,6 @@ const App: React.FC = () => {
                     </button>
                 )}
              </div>
-             {status === AppStatus.SCANNING && (
-                 <p className="text-xs text-orange-600 animate-pulse">
-                     Crawling... Scanned {scannedCount} pages
-                 </p>
-             )}
           </div>
           
           <div className="flex-1 overflow-y-auto p-2 space-y-1">
@@ -373,17 +377,10 @@ const App: React.FC = () => {
                     Multi-Agent Fetch ({selectedLinks.size})
                 </button>
             )}
-            
-            {status === AppStatus.FETCHING_CONTENT && (
-                <p className="text-xs text-center text-slate-500 mt-2 truncate animate-pulse">
-                    Running 3 Agents...<br/>
-                    <span className="text-[10px] text-slate-400">{currentProcessingUrl}</span>
-                </p>
-            )}
           </div>
         </aside>
 
-        {/* Toggle Sidebar Button (No Print) */}
+        {/* Toggle Sidebar Button */}
         <button 
             onClick={() => setIsSidebarOpen(!isSidebarOpen)}
             className="no-print absolute top-4 left-4 z-20 bg-white border border-slate-200 p-2 rounded-md shadow-sm hover:bg-slate-50"
@@ -392,8 +389,77 @@ const App: React.FC = () => {
             {isSidebarOpen ? <Menu className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
         </button>
 
-        {/* Main Content Viewer (The "Paper") */}
-        <main className="flex-1 overflow-y-auto bg-slate-100 p-8 flex justify-center">
+        {/* Main Content Viewer */}
+        <main className="flex-1 overflow-y-auto bg-slate-100 p-8 flex justify-center relative">
+           
+           {/* Progress Dashboard - Floating Card */}
+           {(status === AppStatus.SCANNING || status === AppStatus.FETCHING_CONTENT) && (
+               <div className="no-print fixed top-24 right-8 z-50 w-80 bg-white rounded-xl shadow-2xl border border-slate-200 overflow-hidden ring-1 ring-slate-900/5">
+                   <div className="px-4 py-3 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+                       <h3 className="font-semibold text-slate-800 flex items-center gap-2 text-sm">
+                           <Activity className="w-4 h-4 text-blue-500" /> Live Progress
+                       </h3>
+                   </div>
+                   <div className="p-4 space-y-4">
+                       
+                       {/* 1. Scanning Bar */}
+                       <div>
+                           <div className="flex justify-between text-xs mb-1">
+                               <span className="font-medium text-slate-700 flex items-center gap-1"><Globe className="w-3 h-3"/> Scanning Links</span>
+                               <span className="text-slate-500">{scanProgress.current} found</span>
+                           </div>
+                           <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                               <div 
+                                   className="h-full bg-blue-500 transition-all duration-300"
+                                   style={{ width: `${getPercent(scanProgress.current, scanProgress.total)}%` }}
+                               ></div>
+                           </div>
+                           <p className="text-[10px] text-slate-400 mt-1 truncate">
+                               Current: {scanProgress.currentUrl}
+                           </p>
+                       </div>
+
+                       {/* 2. Reading Bar */}
+                       <div>
+                           <div className="flex justify-between text-xs mb-1">
+                               <span className="font-medium text-slate-700 flex items-center gap-1"><Download className="w-3 h-3"/> Reading (Agents)</span>
+                               <span className="text-slate-500">{readProgress.current} / {readProgress.total}</span>
+                           </div>
+                           <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                               <div 
+                                   className="h-full bg-orange-400 transition-all duration-300"
+                                   style={{ width: `${getPercent(readProgress.current, readProgress.total)}%` }}
+                               ></div>
+                           </div>
+                           <div className="text-[10px] text-slate-400 mt-1 h-8 overflow-hidden">
+                               {readProgress.activeUrls.length > 0 ? (
+                                   readProgress.activeUrls.map((u, i) => (
+                                       <div key={i} className="truncate">• {u}</div>
+                                   ))
+                               ) : <span className="text-slate-300">Agents idle...</span>}
+                           </div>
+                       </div>
+
+                       {/* 3. Writing Bar */}
+                       <div>
+                           <div className="flex justify-between text-xs mb-1">
+                               <span className="font-medium text-slate-700 flex items-center gap-1"><FileOutput className="w-3 h-3"/> Formatting PDF</span>
+                               <span className="text-slate-500">{writeProgress.current} / {writeProgress.total}</span>
+                           </div>
+                           <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                               <div 
+                                   className="h-full bg-green-500 transition-all duration-300"
+                                   style={{ width: `${getPercent(writeProgress.current, writeProgress.total)}%` }}
+                               ></div>
+                           </div>
+                           <p className="text-[10px] text-slate-400 mt-1 truncate">
+                               Done: <span className="text-green-600 font-medium">{writeProgress.lastWritten || '-'}</span>
+                           </p>
+                       </div>
+                   </div>
+               </div>
+           )}
+
            {pages.length === 0 ? (
                <div className="flex flex-col items-center justify-center text-slate-400 mt-20">
                   <div className="w-16 h-16 bg-slate-200 rounded-full flex items-center justify-center mb-4">
@@ -432,14 +498,12 @@ const App: React.FC = () => {
                       {pages.map((page, idx) => (
                           <article key={idx} className="p-16 print:p-0 print:pt-8 print:pb-8 page-break">
                               
-                              {/* Page Header */}
                               <div className="mb-8 pb-4 border-b border-slate-100 print:border-black flex justify-between items-start">
                                   <div>
                                      <h2 className="text-3xl font-bold text-slate-900">{page.title}</h2>
                                      <a href={page.url} className="text-xs text-blue-500 hover:underline print:text-black print:no-underline">{page.url}</a>
                                   </div>
                                   
-                                  {/* AI Action (No Print) */}
                                   <div className="no-print">
                                     <button 
                                         onClick={() => handleSummarize(idx)}
@@ -452,7 +516,6 @@ const App: React.FC = () => {
                                   </div>
                               </div>
 
-                              {/* AI Summary Section */}
                               {page.summary && (
                                   <div className="mb-8 bg-purple-50 p-6 rounded-lg border border-purple-100 print:border-black print:bg-white print:border-2">
                                       <h3 className="text-purple-900 font-bold flex items-center gap-2 mb-2 print:text-black">
@@ -464,7 +527,6 @@ const App: React.FC = () => {
                                   </div>
                               )}
 
-                              {/* Main Content */}
                               <div 
                                 className="scraped-content prose prose-slate max-w-none print:prose-neutral"
                                 dangerouslySetInnerHTML={{ __html: page.content }} 
