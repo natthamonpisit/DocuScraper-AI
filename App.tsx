@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { fetchHtml, extractMainContent, makeLinksAbsolute, extractNavLinks } from './services/proxyService';
 import { generateSummary } from './services/geminiService';
 import { ScrapedPage, AppStatus } from './types';
-import { BookOpen, FileText, Download, RefreshCw, Search, CheckSquare, Square, Cpu, Printer, ChevronRight, Menu, Layers, StopCircle } from 'lucide-react';
+import { BookOpen, FileText, Download, RefreshCw, Search, CheckSquare, Square, Cpu, Printer, ChevronRight, Menu, Layers, StopCircle, Zap } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
 const App: React.FC = () => {
@@ -127,44 +127,82 @@ const App: React.FC = () => {
     }
   };
 
-  // 3. Fetch Content for selected links
+  // 3. Fetch Content (Updated with Multi-Agent / Concurrent Workers)
   const handleFetchContent = async () => {
     setStatus(AppStatus.FETCHING_CONTENT);
     stopScanRef.current = false;
     const linksToFetch = discoveredLinks.filter(l => selectedLinks.has(l.href));
     
-    const newPages: ScrapedPage[] = [];
+    // Initialize empty pages with pending status to preserve order if needed, 
+    // or we can just push results. Let's just push results for simplicity.
+    const results: ScrapedPage[] = [];
+    const jobQueue = [...linksToFetch];
+    
+    // Config: Number of concurrent agents
+    const CONCURRENCY_LIMIT = 3; 
+    let activeWorkers = 0;
+    let completedCount = 0;
 
-    for (const link of linksToFetch) {
-      if (stopScanRef.current) break;
-      setCurrentProcessingUrl(link.href);
-      try {
-        const rawHtml = await fetchHtml(link.href);
-        const mainContent = extractMainContent(rawHtml);
-        const cleanContent = makeLinksAbsolute(mainContent, link.href);
+    // Worker Function
+    const worker = async (workerId: number) => {
+        while (jobQueue.length > 0 && !stopScanRef.current) {
+            const link = jobQueue.shift(); // Dequeue
+            if (!link) break;
 
-        newPages.push({
-          url: link.href,
-          title: link.text,
-          content: cleanContent,
-          status: 'success',
-          links: []
-        });
-      } catch (error) {
-        console.error(`Failed to fetch ${link.href}`, error);
-        newPages.push({
-            url: link.href,
-            title: link.text,
-            content: '<p class="text-red-500">Failed to load content. Please check the URL or try again later.</p>',
-            status: 'error',
-            links: []
-        });
-      }
-      // Add a delay to be polite to the server
-      await new Promise(r => setTimeout(r, 800));
+            setCurrentProcessingUrl(`[Agent ${workerId}] ${link.href}`);
+            
+            try {
+                // Fetch
+                const rawHtml = await fetchHtml(link.href);
+                const mainContent = extractMainContent(rawHtml);
+                const cleanContent = makeLinksAbsolute(mainContent, link.href);
+
+                // Store Result (Thread-safe-ish in JS event loop)
+                results.push({
+                    url: link.href,
+                    title: link.text,
+                    content: cleanContent,
+                    status: 'success',
+                    links: []
+                });
+            } catch (error) {
+                console.error(`Agent ${workerId} failed: ${link.href}`, error);
+                results.push({
+                    url: link.href,
+                    title: link.text,
+                    content: '<p class="text-red-500">Failed to load content.</p>',
+                    status: 'error',
+                    links: []
+                });
+            }
+
+            completedCount++;
+            // Update UI occasionally? React state updates might be batched
+            // We'll update at the end or use a progress bar if we had one.
+            
+            // Random delay to prevent exact-time hammering (300ms - 800ms)
+            const delay = 300 + Math.random() * 500;
+            await new Promise(r => setTimeout(r, delay));
+        }
+    };
+
+    // Start Workers
+    const workers = [];
+    for (let i = 1; i <= CONCURRENCY_LIMIT; i++) {
+        workers.push(worker(i));
     }
 
-    setPages(newPages);
+    // Wait for all workers to finish
+    await Promise.all(workers);
+
+    // Sort results to match original discovery order (optional, but good for TOC)
+    // We create a map for O(1) lookup
+    const resultMap = new Map(results.map(r => [r.url, r]));
+    const sortedPages = linksToFetch
+        .map(link => resultMap.get(link.href))
+        .filter((p): p is ScrapedPage => p !== undefined);
+
+    setPages(sortedPages);
     setStatus(AppStatus.READY_TO_PRINT);
     setIsSidebarOpen(false); // Close sidebar to show content
   };
@@ -323,7 +361,7 @@ const App: React.FC = () => {
                     onClick={handleStopScan}
                     className="w-full bg-red-500 text-white py-3 rounded-lg font-medium text-sm flex justify-center items-center gap-2 hover:bg-red-600 transition-colors"
                 >
-                     <StopCircle className="w-4 h-4" /> Stop Fetching
+                     <StopCircle className="w-4 h-4" /> Stop Agents
                 </button>
             ) : (
                 <button
@@ -331,14 +369,15 @@ const App: React.FC = () => {
                     disabled={selectedLinks.size === 0 || status === AppStatus.SCANNING}
                     className="w-full bg-slate-900 text-white py-3 rounded-lg font-medium text-sm flex justify-center items-center gap-2 disabled:opacity-50 hover:bg-slate-800 transition-colors"
                 >
-                    <Download className="w-4 h-4" />
-                    Fetch {selectedLinks.size} Pages
+                    <Zap className="w-4 h-4 text-yellow-400" />
+                    Multi-Agent Fetch ({selectedLinks.size})
                 </button>
             )}
             
             {status === AppStatus.FETCHING_CONTENT && (
-                <p className="text-xs text-center text-slate-500 mt-2 truncate">
-                    Reading: {currentProcessingUrl}
+                <p className="text-xs text-center text-slate-500 mt-2 truncate animate-pulse">
+                    Running 3 Agents...<br/>
+                    <span className="text-[10px] text-slate-400">{currentProcessingUrl}</span>
                 </p>
             )}
           </div>

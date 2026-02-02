@@ -5,7 +5,7 @@
 
 ## 2. Core Features & User Flow
 
-### 2.1. URL Entry & Scanning
+### 2.1. URL Entry & Scanning (Phase 1: Discovery)
 *   **Input:** Users provide a starting URL (e.g., `https://docs.example.com`).
 *   **Scanning Modes:**
     *   **Standard Scan:** Scans only the provided URL to find navigation links immediately visible.
@@ -23,8 +23,11 @@
     *   Allows "Select All" or individual selection via checkboxes.
     *   Shows scan progress and discovered count.
 
-### 2.3. Content Fetching & Normalization
-*   **Batch Processing:** Fetches content for all selected links sequentially (with a delay to respect server rate limits).
+### 2.3. Content Fetching (Phase 2: Multi-Agent Scraping)
+*   **Architecture:** **Multi-Agent Worker Pool**.
+    *   Instead of fetching pages one-by-one, the system initializes **3 Concurrent Agents**.
+    *   Agents pull URLs from a shared Job Queue.
+    *   Significantly speeds up the process for large documentation sets (e.g., 200+ links).
 *   **Content Extraction (`extractMainContent`):**
     *   Uses DOM selectors (`main`, `article`, `#content`, `.markdown-body`) to isolate the actual documentation text.
     *   Removes noise: Scripts, styles, iframes, headers, footers, and sidebars.
