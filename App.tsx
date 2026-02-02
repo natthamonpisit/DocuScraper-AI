@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { fetchHtml, extractMainContent, makeLinksAbsolute, extractNavLinks } from './services/proxyService';
 import { generateSummary } from './services/geminiService';
 import { ScrapedPage, AppStatus } from './types';
-import { BookOpen, FileText, Download, RefreshCw, Search, CheckSquare, Square, Cpu, Printer, ChevronRight, Menu } from 'lucide-react';
+import { BookOpen, FileText, Download, RefreshCw, Search, CheckSquare, Square, Cpu, Printer, ChevronRight, Menu, Layers, StopCircle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
 const App: React.FC = () => {
@@ -16,38 +16,96 @@ const App: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [currentProcessingUrl, setCurrentProcessingUrl] = useState<string>('');
   
+  // Crawler State
+  const [deepScan, setDeepScan] = useState<boolean>(false);
+  const [scannedCount, setScannedCount] = useState<number>(0);
+  const stopScanRef = useRef<boolean>(false);
+  
   // Gemini/AI State
   const [isSummarizing, setIsSummarizing] = useState(false);
 
-  // 1. Scan the URL for navigation links
+  // 1. Deep Crawler Logic
   const handleScan = async () => {
     if (!baseUrl) return;
     setStatus(AppStatus.SCANNING);
     setDiscoveredLinks([]);
     setSelectedLinks(new Set());
     setPages([]);
+    setScannedCount(0);
+    stopScanRef.current = false;
+
+    // Queue for BFS (Breadth-First Search)
+    let queue: string[] = [baseUrl];
+    const visited = new Set<string>();
+    const foundLinksMap = new Map<string, string>(); // href -> text
 
     try {
-      const html = await fetchHtml(baseUrl);
-      const links = extractNavLinks(html, baseUrl);
-      
-      // Filter links to only keep those on the same domain or documentation path
-      const filteredLinks = links.filter(link => link.href.includes(new URL(baseUrl).hostname));
-      
-      // Always add the base URL itself as the first page if not present
-      if (!filteredLinks.some(l => l.href === baseUrl)) {
-          filteredLinks.unshift({ text: 'Home / Introduction', href: baseUrl });
+      // Loop until queue is empty or stop requested or max limit reached
+      // Safety limit: 100 pages to prevent infinite loops in demo
+      const MAX_PAGES_TO_SCAN = deepScan ? 50 : 1; 
+
+      while (queue.length > 0 && visited.size < MAX_PAGES_TO_SCAN) {
+        if (stopScanRef.current) break;
+
+        const currentUrl = queue.shift()!;
+        if (visited.has(currentUrl)) continue;
+
+        setCurrentProcessingUrl(currentUrl);
+        
+        try {
+            const html = await fetchHtml(currentUrl);
+            visited.add(currentUrl);
+            setScannedCount(visited.size);
+
+            // Extract links from this page
+            const links = extractNavLinks(html, currentUrl);
+            
+            // Filter and add new links
+            links.forEach(link => {
+                // Must be same hostname
+                if (!link.href.includes(new URL(baseUrl).hostname)) return;
+
+                if (!foundLinksMap.has(link.href)) {
+                    foundLinksMap.set(link.href, link.text);
+                    // If deep scan is on, add to queue to explore later
+                    if (deepScan && !visited.has(link.href) && !queue.includes(link.href)) {
+                         queue.push(link.href);
+                    }
+                }
+            });
+
+        } catch (error) {
+            console.warn(`Failed to scan ${currentUrl}`, error);
+            // Continue to next url even if one fails
+        }
+
+        // Increased delay to 500ms to be more polite and avoid 429 errors
+        await new Promise(r => setTimeout(r, 500));
       }
 
-      setDiscoveredLinks(filteredLinks);
-      // Auto-select all by default (limit to first 10 for demo safety, user can add more)
-      const initialSelection = new Set(filteredLinks.slice(0, 5).map(l => l.href));
+      // Convert map to array for display
+      const allFoundLinks = Array.from(foundLinksMap.entries()).map(([href, text]) => ({ href, text }));
+      
+      // Ensure the entered URL is in the list
+      if (!foundLinksMap.has(baseUrl)) {
+         allFoundLinks.unshift({ href: baseUrl, text: 'Home / Entry' });
+      }
+
+      setDiscoveredLinks(allFoundLinks);
+      
+      // Auto-select discovered links (up to reasonable limit for fetching)
+      const initialSelection = new Set(allFoundLinks.slice(0, 50).map(l => l.href));
       setSelectedLinks(initialSelection);
       setStatus(AppStatus.IDLE);
+
     } catch (error) {
-      alert(`Error scanning URL: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      alert(`Error scanning: ${error instanceof Error ? error.message : 'Unknown error'}`);
       setStatus(AppStatus.IDLE);
     }
+  };
+
+  const handleStopScan = () => {
+    stopScanRef.current = true;
   };
 
   // 2. Toggle link selection
@@ -72,11 +130,13 @@ const App: React.FC = () => {
   // 3. Fetch Content for selected links
   const handleFetchContent = async () => {
     setStatus(AppStatus.FETCHING_CONTENT);
+    stopScanRef.current = false;
     const linksToFetch = discoveredLinks.filter(l => selectedLinks.has(l.href));
     
     const newPages: ScrapedPage[] = [];
 
     for (const link of linksToFetch) {
+      if (stopScanRef.current) break;
       setCurrentProcessingUrl(link.href);
       try {
         const rawHtml = await fetchHtml(link.href);
@@ -95,13 +155,13 @@ const App: React.FC = () => {
         newPages.push({
             url: link.href,
             title: link.text,
-            content: '<p class="text-red-500">Failed to load content.</p>',
+            content: '<p class="text-red-500">Failed to load content. Please check the URL or try again later.</p>',
             status: 'error',
             links: []
         });
       }
-      // Add a small delay to be polite to the server
-      await new Promise(r => setTimeout(r, 500));
+      // Add a delay to be polite to the server
+      await new Promise(r => setTimeout(r, 800));
     }
 
     setPages(newPages);
@@ -147,22 +207,50 @@ const App: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-4 flex-1 max-w-2xl mx-8">
-          <div className="flex-1 flex gap-2">
-            <input 
-              type="text" 
-              value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
-              placeholder="Enter documentation URL (e.g., https://docs.openclaw.ai/)"
-              className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm"
-            />
-            <button 
-                onClick={handleScan}
-                disabled={status !== AppStatus.IDLE && status !== AppStatus.READY_TO_PRINT}
-                className="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-medium transition-colors disabled:opacity-50"
-            >
-              {status === AppStatus.SCANNING ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-              Scan
-            </button>
+          <div className="flex-1 flex flex-col gap-1">
+            <div className="flex gap-2">
+                <input 
+                type="text" 
+                value={baseUrl}
+                onChange={(e) => setBaseUrl(e.target.value)}
+                placeholder="Enter documentation URL (e.g., https://docs.openclaw.ai/)"
+                className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm"
+                />
+                
+                {status === AppStatus.SCANNING ? (
+                    <button 
+                        onClick={handleStopScan}
+                        className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-medium transition-colors"
+                    >
+                        <StopCircle className="w-4 h-4" /> Stop
+                    </button>
+                ) : (
+                    <button 
+                        onClick={handleScan}
+                        disabled={status !== AppStatus.IDLE && status !== AppStatus.READY_TO_PRINT}
+                        className="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-medium transition-colors disabled:opacity-50"
+                    >
+                        <Search className="w-4 h-4" /> Scan
+                    </button>
+                )}
+            </div>
+            
+            {/* Deep Scan Toggle */}
+            <div className="flex items-center gap-2 px-1">
+                <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer select-none">
+                    <input 
+                        type="checkbox" 
+                        checked={deepScan}
+                        onChange={(e) => setDeepScan(e.target.checked)}
+                        className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    <span className="font-medium flex items-center gap-1">
+                        <Layers className="w-3 h-3" /> 
+                        Deep Crawler (Slow but finds all pages)
+                    </span>
+                </label>
+            </div>
+
           </div>
         </div>
 
@@ -183,22 +271,29 @@ const App: React.FC = () => {
         
         {/* Sidebar: Link Selection (No Print) */}
         <aside className={`no-print bg-white border-r border-slate-200 flex flex-col transition-all duration-300 ${isSidebarOpen ? 'w-80' : 'w-0 overflow-hidden'}`}>
-          <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-             <h2 className="font-semibold text-slate-700 flex items-center gap-2">
-               <FileText className="w-4 h-4" /> 
-               Found Pages ({discoveredLinks.length})
-             </h2>
-             {discoveredLinks.length > 0 && (
-                 <button onClick={toggleSelectAll} className="text-xs text-blue-600 font-medium hover:underline">
-                    {selectedLinks.size === discoveredLinks.length ? 'Deselect All' : 'Select All'}
-                 </button>
+          <div className="p-4 border-b border-slate-100 flex flex-col gap-2 bg-slate-50">
+             <div className="flex justify-between items-center">
+                <h2 className="font-semibold text-slate-700 flex items-center gap-2">
+                    <FileText className="w-4 h-4" /> 
+                    Found ({discoveredLinks.length})
+                </h2>
+                {discoveredLinks.length > 0 && (
+                    <button onClick={toggleSelectAll} className="text-xs text-blue-600 font-medium hover:underline">
+                        {selectedLinks.size === discoveredLinks.length ? 'Deselect All' : 'Select All'}
+                    </button>
+                )}
+             </div>
+             {status === AppStatus.SCANNING && (
+                 <p className="text-xs text-orange-600 animate-pulse">
+                     Crawling... Scanned {scannedCount} pages
+                 </p>
              )}
           </div>
           
           <div className="flex-1 overflow-y-auto p-2 space-y-1">
              {discoveredLinks.length === 0 && status === AppStatus.IDLE && (
                  <div className="text-center p-8 text-slate-400 text-sm">
-                    Enter a URL and scan to see pages here.
+                    1. Enter URL<br/>2. Check "Deep Crawler"<br/>3. Click Scan
                  </div>
              )}
              
@@ -223,23 +318,24 @@ const App: React.FC = () => {
           </div>
 
           <div className="p-4 border-t border-slate-200 bg-white">
-            <button
-                onClick={handleFetchContent}
-                disabled={selectedLinks.size === 0 || status === AppStatus.FETCHING_CONTENT}
-                className="w-full bg-slate-900 text-white py-3 rounded-lg font-medium text-sm flex justify-center items-center gap-2 disabled:opacity-50 hover:bg-slate-800 transition-colors"
-            >
-                {status === AppStatus.FETCHING_CONTENT ? (
-                   <>
-                     <RefreshCw className="w-4 h-4 animate-spin" />
-                     Fetching...
-                   </>
-                ) : (
-                   <>
-                     <Download className="w-4 h-4" />
-                     Fetch {selectedLinks.size} Pages
-                   </>
-                )}
-            </button>
+            {status === AppStatus.FETCHING_CONTENT ? (
+                <button
+                    onClick={handleStopScan}
+                    className="w-full bg-red-500 text-white py-3 rounded-lg font-medium text-sm flex justify-center items-center gap-2 hover:bg-red-600 transition-colors"
+                >
+                     <StopCircle className="w-4 h-4" /> Stop Fetching
+                </button>
+            ) : (
+                <button
+                    onClick={handleFetchContent}
+                    disabled={selectedLinks.size === 0 || status === AppStatus.SCANNING}
+                    className="w-full bg-slate-900 text-white py-3 rounded-lg font-medium text-sm flex justify-center items-center gap-2 disabled:opacity-50 hover:bg-slate-800 transition-colors"
+                >
+                    <Download className="w-4 h-4" />
+                    Fetch {selectedLinks.size} Pages
+                </button>
+            )}
+            
             {status === AppStatus.FETCHING_CONTENT && (
                 <p className="text-xs text-center text-slate-500 mt-2 truncate">
                     Reading: {currentProcessingUrl}
@@ -266,9 +362,7 @@ const App: React.FC = () => {
                   </div>
                   <h3 className="text-lg font-medium text-slate-600">Ready to Scrape</h3>
                   <p className="max-w-md text-center mt-2 text-sm">
-                      1. Scan a documentation URL.<br/>
-                      2. Select the pages you want.<br/>
-                      3. Click Fetch to generate your offline reader.
+                      Check <strong>"Deep Crawler"</strong> to find hidden pages,<br/>or just Scan for quick mode.
                   </p>
                </div>
            ) : (
