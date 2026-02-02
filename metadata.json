@@ -1,0 +1,5 @@
+{
+  "name": "DocuScraper AI",
+  "description": "A smart documentation aggregator that crawls web pages, formats them for reading, utilizes Gemini AI for summarization, and generates clean PDFs for offline use.",
+  "requestFramePermissions": []
+}

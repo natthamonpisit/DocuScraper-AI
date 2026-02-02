@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DocuScraper AI - Offline Reader</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              primary: '#0f172a',
+              secondary: '#334155',
+              accent: '#3b82f6',
+            },
+            typography: {
+              DEFAULT: {
+                css: {
+                  maxWidth: '100%',
+                },
+              },
+            },
+          },
+        },
+      }
+    </script>
+    <style>
+      /* Custom Print Styles */
+      @media print {
+        @page {
+          margin: 2cm;
+          size: auto; 
+        }
+        body {
+          background-color: white;
+          color: black;
+        }
+        .no-print {
+          display: none !important;
+        }
+        .print-only {
+          display: block !important;
+        }
+        /* Ensure links are visible but not underlined aggressively */
+        a {
+          text-decoration: none;
+          color: #000;
+        }
+        /* Force background graphics to show if needed (optional) */
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+        
+        /* Break pages nicely */
+        h1, h2 {
+          page-break-before: auto;
+          page-break-after: avoid;
+        }
+        p, pre, blockquote {
+          page-break-inside: avoid;
+        }
+      }
+      
+      /* Web Content Cleanups */
+      .scraped-content img {
+        max-width: 100%;
+        height: auto;
+        margin: 1rem 0;
+        border-radius: 0.5rem;
+      }
+      .scraped-content h1 { font-size: 2.5rem; font-weight: 800; margin-bottom: 1.5rem; color: #1e293b; }
+      .scraped-content h2 { font-size: 1.8rem; font-weight: 700; margin-top: 2rem; margin-bottom: 1rem; color: #334155; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.5rem; }
+      .scraped-content h3 { font-size: 1.5rem; font-weight: 600; margin-top: 1.5rem; margin-bottom: 0.75rem; color: #475569; }
+      .scraped-content p { font-size: 1.1rem; line-height: 1.8; margin-bottom: 1.25rem; color: #374151; }
+      .scraped-content ul, .scraped-content ol { margin-left: 1.5rem; margin-bottom: 1.25rem; list-style-type: disc; }
+      .scraped-content li { margin-bottom: 0.5rem; }
+      .scraped-content pre { background: #f1f5f9; padding: 1rem; border-radius: 0.5rem; overflow-x: auto; font-family: monospace; font-size: 0.9rem; border: 1px solid #e2e8f0; }
+      .scraped-content code { background: #f1f5f9; padding: 0.2rem 0.4rem; border-radius: 0.25rem; font-family: monospace; font-size: 0.9em; color: #ef4444; }
+      .scraped-content table { width: 100%; border-collapse: collapse; margin-bottom: 1.5rem; }
+      .scraped-content th, .scraped-content td { border: 1px solid #cbd5e1; padding: 0.75rem; text-align: left; }
+      .scraped-content th { background-color: #f8fafc; font-weight: 600; }
+      .scraped-content blockquote { border-left: 4px solid #3b82f6; padding-left: 1rem; margin-left: 0; font-style: italic; color: #64748b; background: #f8fafc; padding: 1rem; border-radius: 0 0.5rem 0.5rem 0; }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
+    "react-markdown": "https://esm.sh/react-markdown@^10.1.0",
+    "@google/genai": "https://esm.sh/@google/genai@^1.39.0",
+    "react/": "https://esm.sh/react@^19.2.4/",
+    "react": "https://esm.sh/react@^19.2.4",
+    "lucide-react": "https://esm.sh/lucide-react@^0.563.0"
+  }
+}
+</script>
+</head>
+  <body class="bg-slate-50 text-slate-900 h-screen overflow-hidden">
+    <div id="root" class="h-full"></div>
+  </body>
+</html>
